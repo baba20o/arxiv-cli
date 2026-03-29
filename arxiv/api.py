@@ -348,8 +348,8 @@ class ArxivClient:
             try:
                 response = self.session.get(BASE_URL, params=params)
 
-                if response.status_code == 503:
-                    # arXiv returns 503 when overloaded
+                if response.status_code in (429, 503):
+                    # arXiv returns 503 when overloaded, 429 when rate limited
                     wait = DEFAULT_RETRY_WAIT * (2 ** attempt)
                     retry_after = response.headers.get("Retry-After")
                     if retry_after:
@@ -358,7 +358,8 @@ class ArxivClient:
                         except ValueError:
                             pass
                     if attempt < MAX_RETRIES:
-                        logger.warning("arXiv 503 — waiting %ds (retry %d/%d)", wait, attempt + 1, MAX_RETRIES)
+                        logger.warning("arXiv %d — waiting %ds (retry %d/%d)",
+                                      response.status_code, wait, attempt + 1, MAX_RETRIES)
                         time.sleep(wait)
                         continue
 
