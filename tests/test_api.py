@@ -131,6 +131,39 @@ def test_search_with_date_range(client):
         )
 
 
+def test_search_with_date_range_fallback_filters_client_side(client):
+    first = {"error": "429 Client Error: Too Many Requests", "papers": [], "total": 0}
+    second = {
+        "total": 3,
+        "start": 0,
+        "page_size": 3,
+        "papers": [
+            {"id": "a", "published": "2026-03-02T00:00:00Z"},
+            {"id": "b", "published": "2026-02-28T00:00:00Z"},
+            {"id": "c", "published": "2026-03-20T00:00:00Z"},
+        ],
+    }
+    with patch.object(client, "search", side_effect=[first, second]) as mock_search:
+        result = client.search_with_date_range("cat:cs.AI", "20260301", "20260331", max_results=10)
+
+    assert mock_search.call_count == 2
+    assert mock_search.call_args_list[0].args[0] == "cat:cs.AI AND submittedDate:[202603010000 TO 202603312359]"
+    assert mock_search.call_args_list[1].args[0] == "cat:cs.AI"
+    assert result["fallback"] == "client_side_date_filter"
+    assert result["total"] == 2
+    assert [paper["id"] for paper in result["papers"]] == ["a", "c"]
+
+
+def test_search_with_date_range_fallback_unavailable_returns_original_error(client):
+    first = {"error": "429 Client Error: Too Many Requests", "papers": [], "total": 0}
+    second = {"error": "429 Client Error: Too Many Requests", "papers": [], "total": 0}
+    with patch.object(client, "search", side_effect=[first, second]) as mock_search:
+        result = client.search_with_date_range("cat:cs.AI", "20260301", "20260331", max_results=10)
+
+    assert mock_search.call_count == 2
+    assert result["error"].startswith("429")
+
+
 def test_search_author_in_category(client):
     with patch.object(client, "search", return_value={"total": 0, "papers": []}) as mock_search:
         client.search_author_in_category("hinton", "cs.LG", start=3, max_results=4)

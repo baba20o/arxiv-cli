@@ -488,6 +488,8 @@ def date_range(ctx, query, date_from, date_to, limit, offset, json_output, markd
     )
     if _error_exit(result):
         return
+    if result.get("fallback") == "client_side_date_filter":
+        console.print("[yellow]Date-range fallback used: client-side date filtering after upstream 429[/yellow]")
     if json_output:
         click.echo(json.dumps(result, indent=2))
     elif markdown:

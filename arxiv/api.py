@@ -8,6 +8,7 @@ Docs: https://info.arxiv.org/help/api/user-manual.html
 """
 
 import logging
+import random
 import time
 import xml.etree.ElementTree as ET
 from typing import List
@@ -27,6 +28,10 @@ ARXIV_NS = "{http://arxiv.org/schemas/atom}"
 
 MAX_RETRIES = 3
 DEFAULT_RETRY_WAIT = 5
+MAX_RETRY_WAIT = 120
+REQUEST_TIMEOUT = 45
+DATE_RANGE_FALLBACK_MIN = 100
+DATE_RANGE_FALLBACK_MULTIPLIER = 8
 
 
 def _text(el, tag: str, ns: str = ATOM_NS) -> str:
@@ -134,6 +139,29 @@ def _parse_response(xml_text: str) -> dict:
         "page_size": items_per_page,
         "papers": papers,
     }
+
+
+def _normalize_yyyymmdd(date_text: str) -> str:
+    if not date_text:
+        return ""
+    compact = date_text[:10].replace("-", "")
+    if len(compact) != 8 or not compact.isdigit():
+        return ""
+    return compact
+
+
+def _retry_wait_seconds(attempt: int, response: requests.Response = None) -> float:
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(1.0, float(retry_after))
+            except ValueError:
+                pass
+
+    base = 15 if response is not None and response.status_code == 429 else DEFAULT_RETRY_WAIT
+    wait = base * (2 ** attempt) + random.uniform(0, 1.0)
+    return min(wait, MAX_RETRY_WAIT)
 
 
 class ArxivClient:
@@ -269,14 +297,47 @@ class ArxivClient:
 
         Dates in YYYYMMDD format. Appends submittedDate range filter.
         """
-        # arXiv date format: submittedDate:[YYYYMMDDTTTT TO YYYYMMDDTTTT]
         date_filter = f"submittedDate:[{date_from}0000 TO {date_to}2359]"
-        if query:
-            full_query = f"{query} AND {date_filter}"
-        else:
-            full_query = date_filter
-        return self.search(full_query, start=start, max_results=max_results,
-                          sort_by=sort_by, sort_order=sort_order)
+        full_query = f"{query} AND {date_filter}" if query else date_filter
+        result = self.search(
+            full_query,
+            start=start,
+            max_results=max_results,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+        if "error" not in result or "429" not in str(result.get("error", "")) or not query:
+            return result
+
+        logger.warning(
+            "Date-range query received 429; retrying via client-side date filtering for query: %s",
+            query,
+        )
+        fallback_limit = min(2000, max(DATE_RANGE_FALLBACK_MIN, max_results * DATE_RANGE_FALLBACK_MULTIPLIER))
+        fallback = self.search(
+            query,
+            start=0,
+            max_results=fallback_limit,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        if "error" in fallback:
+            return result
+
+        filtered = [
+            paper
+            for paper in fallback.get("papers", [])
+            if date_from <= _normalize_yyyymmdd(paper.get("published", "")) <= date_to
+        ]
+        window = filtered[start:start + max_results]
+        return {
+            "total": len(filtered),
+            "start": start,
+            "page_size": len(window),
+            "papers": window,
+            "fallback": "client_side_date_filter",
+        }
 
     # ── Compound Queries ──────────────────────────────────
 
@@ -320,7 +381,7 @@ class ArxivClient:
             output_path = f"{safe_id}.pdf"
 
         self.rate_limiter.acquire()
-        response = self.session.get(pdf_url, stream=True)
+        response = self.session.get(pdf_url, stream=True, timeout=(10, REQUEST_TIMEOUT))
         response.raise_for_status()
 
         with open(output_path, "wb") as f:
@@ -346,22 +407,25 @@ class ArxivClient:
         for attempt in range(MAX_RETRIES + 1):
             self.rate_limiter.acquire()
             try:
-                response = self.session.get(BASE_URL, params=params)
+                response = self.session.get(BASE_URL, params=params, timeout=(10, REQUEST_TIMEOUT))
 
                 if response.status_code in (429, 503):
-                    # arXiv returns 503 when overloaded, 429 when rate limited
-                    wait = DEFAULT_RETRY_WAIT * (2 ** attempt)
-                    retry_after = response.headers.get("Retry-After")
-                    if retry_after:
-                        try:
-                            wait = int(retry_after)
-                        except ValueError:
-                            pass
+                    wait = _retry_wait_seconds(attempt, response)
                     if attempt < MAX_RETRIES:
-                        logger.warning("arXiv %d — waiting %ds (retry %d/%d)",
-                                      response.status_code, wait, attempt + 1, MAX_RETRIES)
+                        logger.warning(
+                            "arXiv %d — waiting %.1fs (retry %d/%d)",
+                            response.status_code,
+                            wait,
+                            attempt + 1,
+                            MAX_RETRIES,
+                        )
                         time.sleep(wait)
                         continue
+                    return {
+                        "error": f"arXiv API rate-limited (HTTP {response.status_code}) after retries",
+                        "papers": [],
+                        "total": 0,
+                    }
 
                 response.raise_for_status()
                 result = _parse_response(response.text)
@@ -374,7 +438,9 @@ class ArxivClient:
             except requests.exceptions.RequestException as e:
                 last_error = e
                 if attempt < MAX_RETRIES:
-                    time.sleep(DEFAULT_RETRY_WAIT * (2 ** attempt))
+                    wait = _retry_wait_seconds(attempt)
+                    logger.warning("Request error — waiting %.1fs (retry %d/%d)", wait, attempt + 1, MAX_RETRIES)
+                    time.sleep(wait)
                     continue
                 return {"error": str(e), "papers": [], "total": 0}
 
