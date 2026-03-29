@@ -1,0 +1,24 @@
+# Cache
+.arxiv_cache/
+
+# Environment
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Context (swagger specs, API docs)
+context/
