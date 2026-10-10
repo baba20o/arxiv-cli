@@ -66,6 +66,10 @@ arxiv download 1706.03762 --output ./papers/
 arxiv download 1706.03762 --output ./papers/attention.pdf
 ```
 
+Paper-body text extraction is not currently built in. See the
+[paper text extraction proposal](docs/paper-text-extraction-proposal.md) for
+trial feedback and a proposed versioned reading command.
+
 ### `journal` — Search by journal reference
 
 ```bash
