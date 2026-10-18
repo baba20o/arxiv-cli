@@ -66,6 +66,8 @@ arxiv download 1706.03762 --output ./papers/
 arxiv download 1706.03762 --output ./papers/attention.pdf
 ```
 
+Without `--output`, the PDF is saved in the current directory as `<id>.pdf` (a `/` in old-style IDs becomes `_`). An `--output` value that is an existing directory, or that ends in `/`, is treated as a directory and created if needed; any other value is used as the file path. An existing file at that path is overwritten without prompting.
+
 ### `journal` — Search by journal reference
 
 ```bash
@@ -77,6 +79,8 @@ arxiv journal "Physical Review"
 ```bash
 arxiv date-range "machine learning" --from 20240101 --to 20241231
 ```
+
+`--from` and `--to` are required and use `YYYYMMDD`. If arXiv still rate-limits the date-filtered query (HTTP 429) after retries, the CLI prints a warning, re-runs the query without the date filter, and filters locally by each paper's `published` (first version) date. This fallback only inspects the most recent matches (the larger of 100 or 8× `--limit`, at most 2000), so it can miss older papers in the range and its total counts only matches within that pool. JSON output marks these results with `"fallback": "client_side_date_filter"`. If the fallback query also fails, the original error is reported.
 
 ### `categories` — List category codes
 
@@ -101,12 +105,33 @@ Every search-style command supports three output modes:
 | `--markdown` / `-m` | Markdown output | Agent parsing, copy/paste |
 | `--json-output` / `-j` | Raw JSON | Programmatic pipelines |
 
+## Paging and Sorting
+
+| Option | Commands | Default |
+|--------|----------|---------|
+| `--limit` / `-n` | `search`, `author`, `category`, `recent`, `journal`, `date-range` | 10 (20 for `recent`) |
+| `--offset` / `-o` | `search`, `author`, `category`, `journal`, `date-range` | 0 |
+| `--sort` | `search`, `author`, `category` | `relevance` for `search`, `submittedDate` otherwise; also `lastUpdatedDate` |
+| `--order` | `search`, `author`, `category` | `descending` (or `ascending`) |
+
+```bash
+arxiv search "ti:diffusion" --sort submittedDate --limit 5 --offset 5
+```
+
+On `download`, `-o` is short for `--output`, not `--offset`.
+
 ## Global Options
 
 | Option | Description |
 |--------|-------------|
 | `--debug` | Enable debug logging |
 | `--no-cache` | Disable response caching |
+
+Global options go before the command name:
+
+```bash
+arxiv --no-cache search "transformer attention mechanism"
+```
 
 ## Query Syntax
 
@@ -137,8 +162,8 @@ arxiv/
 ```
 
 - Rate limiting: 1 request every 3 seconds across processes
-- Caching: 24-hour TTL in `~/.arxiv_cache/`
-- Retry handling: exponential backoff on transient failures
+- Caching: successful API query responses are cached for 24 hours in `~/.arxiv_cache/`; PDF downloads are not cached
+- Retry handling: API queries retry up to 3 times with exponential backoff on HTTP errors and network failures (429/503 responses honor `Retry-After`); PDF downloads are not retried
 
 ## Development
 
